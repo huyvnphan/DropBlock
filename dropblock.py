@@ -6,14 +6,14 @@ from torch.distributions import Bernoulli
 
 
 class DropBlock(nn.Module):
-    def __init__(self, drop_prob, block_size, warmup_steps=5000):
+    def __init__(self, drop_prob, block_size, warmup_steps=2500):
         super().__init__()
-        self.drop_prob = drop_prob
         self.block_size = block_size
         self.current_step = 0
         self.drop_values = np.linspace(
             start=1e-6, stop=drop_prob, num=int(warmup_steps)
         )
+        self.drop_prob = self.drop_values[0]
 
     def step(self):
         if self.current_step < len(self.drop_values):
@@ -21,19 +21,10 @@ class DropBlock(nn.Module):
             self.current_step += 1
 
     def forward(self, x):
-        # shape: (bsize, channels, height, width)
-
-        feat_size = x.size(2)
-        gamma = (
-            self.drop_prob
-            / self.block_size ** 2
-            * feat_size ** 2
-            / (feat_size - self.block_size + 1) ** 2
-        )
-
         if self.training:
-            batch_size, channels, height, width = x.shape
+            batch_size, channels, height, width = x.size()
 
+            gamma = self._compute_gamma(x)
             bernoulli = Bernoulli(gamma)
             mask = bernoulli.sample(
                 (
@@ -43,28 +34,29 @@ class DropBlock(nn.Module):
                     width - (self.block_size - 1),
                 )
             ).to(x.device)
-            # print((x.sample[-2], x.sample[-1]))
-            block_mask = self._compute_block_mask(mask)
-            # print (block_mask.size())
-            # print (x.size())
-            countM = (
-                block_mask.size(0)
-                * block_mask.size(1)
-                * block_mask.size(2)
-                * block_mask.size(3)
-            )
-            count_ones = block_mask.sum()
 
-            return block_mask * x * (countM / count_ones)
+            block_mask = self._compute_block_mask(mask)
+            scale = torch.numel(block_mask) / block_mask.sum()
+
+            return x * block_mask * scale
         else:
             return x
+
+    def _compute_gamma(self, x):
+        feat_size = x.size(2)
+        gamma = (
+            self.drop_prob
+            / self.block_size ** 2
+            * feat_size ** 2
+            / (feat_size - self.block_size + 1) ** 2
+        )
+        return gamma
 
     def _compute_block_mask(self, mask):
         left_padding = int((self.block_size - 1) / 2)
         right_padding = int(self.block_size / 2)
 
-        batch_size, channels, height, width = mask.shape
-        # print ("mask", mask[0][0])
+        batch_size, channels, height, width = mask.size()
         non_zero_idxs = torch.nonzero(mask, as_tuple=False)
         nr_blocks = non_zero_idxs.size(0)
 
@@ -74,17 +66,19 @@ class DropBlock(nn.Module):
                     torch.arange(self.block_size)
                     .view(-1, 1)
                     .expand(self.block_size, self.block_size)
-                    .reshape(-1),  # - left_padding,
-                    torch.arange(self.block_size).repeat(
-                        self.block_size
-                    ),  # - left_padding
+                    .reshape(-1),
+                    torch.arange(self.block_size).repeat(self.block_size),
                 ]
             )
             .t()
             .to(mask.device)
         )
         offsets = torch.cat(
-            (torch.zeros(self.block_size ** 2, 2).cuda().long(), offsets.long()), 1
+            (
+                torch.zeros(self.block_size ** 2, 2, device=mask.device).long(),
+                offsets.long(),
+            ),
+            1,
         )
 
         if nr_blocks > 0:
@@ -93,7 +87,6 @@ class DropBlock(nn.Module):
             offsets = offsets.long()
 
             block_idxs = non_zero_idxs + offsets
-            # block_idxs += left_padding
             padded_mask = F.pad(
                 mask, (left_padding, right_padding, left_padding, right_padding)
             )
@@ -105,5 +98,5 @@ class DropBlock(nn.Module):
                 mask, (left_padding, right_padding, left_padding, right_padding)
             )
 
-        block_mask = 1 - padded_mask  # [:height, :width]
+        block_mask = 1 - padded_mask
         return block_mask
