@@ -9,11 +9,11 @@ class DropBlock(nn.Module):
     def __init__(self, drop_prob, block_size, warmup_steps=2500):
         super().__init__()
         self.block_size = block_size
-        self.register_buffer("current_step", torch.tensor(0, dtype=torch.long))
-        self.drop_values = torch.tensor(np.linspace(
+        self.current_step = 0
+        self.drop_values = np.linspace(
             start=1e-6, stop=drop_prob, num=int(warmup_steps)
-        ))
-        self.drop_prob = self.drop_values[self.current_step]
+        )
+        self.drop_prob = self.drop_values[0]
 
     def step(self):
         if self.current_step < len(self.drop_values):
